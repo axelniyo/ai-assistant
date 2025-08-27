@@ -3,8 +3,8 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import httpx
 import jwt
+from jwt.algorithms import RSAAlgorithm
 from functools import lru_cache
-from jwt import PyJWKClient
 
 app = FastAPI(
     title="Hello Copilot API (Secure)",
@@ -12,26 +12,30 @@ app = FastAPI(
     version="1.0.0"
 )
 
-CLIENT_ID = os.getenv("CLIENT_ID")  # set this in Render env vars
-JWKS_URL = "https://login.microsoftonline.com/common/discovery/v2.0/keys"
+CLIENT_ID = os.getenv("CLIENT_ID")
+TENANT_ID = os.getenv("TENANT_ID")
+JWKS_URL = f"https://login.microsoftonline.com/{TENANT_ID}/discovery/v2.0/keys"
 
 security = HTTPBearer()
 
-# Use PyJWT 2.x PyJWKClient to fetch keys
 @lru_cache
-def get_jwk_client():
-    return PyJWKClient(JWKS_URL)
+def get_jwks():
+    resp = httpx.get(JWKS_URL)
+    resp.raise_for_status()
+    return resp.json()
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
-    jwk_client = get_jwk_client()
+    jwks = get_jwks()
     try:
-        signing_key = jwk_client.get_signing_key_from_jwt(token).key
+        unverified_header = jwt.get_unverified_header(token)
+        key = next(k for k in jwks["keys"] if k["kid"] == unverified_header["kid"])
+        public_key = RSAAlgorithm.from_jwk(key)
         payload = jwt.decode(
             token,
-            signing_key,
+            public_key,
             algorithms=["RS256"],
-            audience=CLIENT_ID,
+            audience=f"api://{CLIENT_ID}",
         )
         return payload
     except Exception as e:
